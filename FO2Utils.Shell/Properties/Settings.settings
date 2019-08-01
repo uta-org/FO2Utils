@@ -1,0 +1,15 @@
+﻿<?xml version='1.0' encoding='utf-8'?>
+<SettingsFile xmlns="http://schemas.microsoft.com/VisualStudio/2004/01/settings" CurrentProfile="(Default)" GeneratedClassNamespace="FO2Utils.Shell.Properties" GeneratedClassName="Settings">
+  <Profiles />
+  <Settings>
+    <Setting Name="FO2Path" Type="System.String" Scope="User">
+      <Value Profile="(Default)">E:\JUEGOS\FO2</Value>
+    </Setting>
+    <Setting Name="PatchFilePath" Type="System.String" Scope="User">
+      <Value Profile="(Default)">E:\JUEGOS\FO2\bfs\patch</Value>
+    </Setting>
+    <Setting Name="BFS2PackPath" Type="System.String" Scope="User">
+      <Value Profile="(Default)">E:\JUEGOS\FO2\bfs2pack1.2-bin\bfs2pack_con.exe</Value>
+    </Setting>
+  </Settings>
+</SettingsFile>
