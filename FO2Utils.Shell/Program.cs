@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Security.Cryptography;
 using FO2Utils.Shell.Properties;
 using Newtonsoft.Json;
 using Console = Colorful.Console;
@@ -61,108 +62,249 @@ namespace FO2Utils.Shell
             var bfsFolders = bfsFiles.Select(line => GetActualTempFolder(tempFolder, line));
             var bfsDict = bfsFolders.Select(folder => new { Folder = folder, Files = GetFolderFiles(folder), ConflictingFiles = GetConflictingFiles(folder) })
                 .ToDictionary(t => t.Folder + "\\", t => new Tuple<List<string>, List<string>>(t.Files, t.ConflictingFiles));
+            var _allFiles = bfsFolders.Select(file => GetFolderFiles(file, false).AsEnumerable()).Select(x => x).Distinct().ToList();
+
+            HashSet<string> allOrigFiles;
+            string origJson = Path.Combine(tempFolder, "origFiles.json");
+
+            if (!File.Exists(origJson))
+            {
+                allOrigFiles = new HashSet<string>(GetFolderFiles(dataFolder, false));
+                File.WriteAllText(origJson, JsonConvert.SerializeObject(allOrigFiles, Formatting.Indented));
+            }
+            else
+                allOrigFiles = JsonConvert.DeserializeObject<HashSet<string>>(File.ReadAllText(origJson));
 
             string dictJson = Path.Combine(tempFolder, "dict.json");
             File.WriteAllText(dictJson, JsonConvert.SerializeObject(bfsDict, Formatting.Indented));
 
+            string allFilesJson = Path.Combine(tempFolder, "files.json");
+            File.WriteAllText(allFilesJson, JsonConvert.SerializeObject(_allFiles, Formatting.Indented));
+
             // TODO: Make restore
-
-            int index = 0;
-            int totalCount = bfsFiles.Count();
-            foreach (var bfsFile in bfsFiles)
+            Console.Write("Do you wish to make a restore? [y/N]: ");
+            if (Console.ReadLine().ToLowerInvariant() == "y")
             {
-                if (!File.Exists(bfsFile) || Path.GetExtension(bfsFile).ToLowerInvariant() != ".bfs")
-                    continue;
+                const string backupString = ".backup0";
 
-                string actualTempPath = GetActualTempFolder(tempFolder, bfsFile) + "\\";
+                var allFiles = Directory.GetFiles(dataFolder, "*.*", SearchOption.AllDirectories);
+                var _allDataFiles = bfsFolders.Select(file => dataFolder + "\\" + GetFolderFiles(file).AsEnumerable()).Select(x => x).Distinct().ToList();
 
-                if (!Directory.Exists(actualTempPath))
+                var backupFiles = allFiles
+                    .Where(file => Path.GetExtension(file)?.ToLowerInvariant() == backupString);
+
+                var jsonFiles = allFiles
+                    .Where(file => Path.GetExtension(file)?.ToLowerInvariant() == ".json");
+
+                int index = 0;
+                int totalCount = backupFiles.Count() + jsonFiles.Count();
+
+                foreach (var backupFile in backupFiles)
                 {
-                    Directory.CreateDirectory(actualTempPath);
-                    CreateProcess(Settings.BFS2PackPath, $"x {bfsFile} -v", actualTempPath);
-                }
-
-                var inFiles = bfsDict[actualTempPath].Item1;
-
-                const string backupFilename = "backup-database.json";
-                const string backupSufix = "backup";
-
-                Dictionary<string, List<Tuple<int, string>>> currentDictionary;
-
-                int subindex = 0;
-                foreach (var inFile in inFiles)
-                {
-                    string realFile = Path.Combine(actualTempPath, inFile);
-                    string replFile = Path.Combine(Settings.FO2Path, inFile);
-
-                    bool exists = File.Exists(replFile);
-                    if (exists)
+                    if (!File.Exists(backupFile))
                     {
-                        string folder = Path.GetDirectoryName(replFile);
-                        string database = Path.Combine(folder, backupFilename);
+                        Console.WriteLine($"[{GetPerc(index, totalCount)}] File doesn't exists! ({backupFile})", Color.Red);
 
-                        // Get number of ocurrences
-                        int ocurrences = Directory
-                            .GetFiles(folder, $"{Path.GetFileNameWithoutExtension(replFile)}.*", SearchOption.TopDirectoryOnly)
-                            .Count(file => Path.GetExtension(file).ToLowerInvariant().Contains(".backup"));
-
-                        // Based on the number of backups then create *.backup(XX) files... *.backup0 will be always the original file
-                        File.Move(replFile, replFile + $".{backupSufix}{ocurrences}");
-
-                        string fileName = Path.GetFileName(replFile);
-
-                        // Load current dictionary...
-                        currentDictionary =
-                            File.Exists(database) ? JsonConvert.DeserializeObject<Dictionary<string, List<Tuple<int, string>>>>(
-                                File.ReadAllText(database)) : new Dictionary<string, List<Tuple<int, string>>>();
-
-                        bool save = false;
-
-                        // Map the ocurrence with the folder where it comes from...
-                        if (!currentDictionary.ContainsKey(fileName))
-                        {
-                            var list = new List<Tuple<int, string>>(); // ocurrences = 0, in this scope
-                            list.Add(new Tuple<int, string>(ocurrences, actualTempPath));
-
-                            currentDictionary.Add(fileName, list);
-                            save = true;
-                        }
-                        else
-                        {
-                            var list = currentDictionary[fileName];
-                            if (list.Count < ocurrences)
-                            {
-                                list.Add(new Tuple<int, string>(ocurrences, actualTempPath));
-                                save = true;
-                            }
-                        }
-
-                        // If any changes made...
-                        if (save)
-                            File.WriteAllText(database,
-                                JsonConvert.SerializeObject(currentDictionary, Formatting.Indented));
-                    }
-
-                    if (!File.Exists(realFile))
-                    {
-                        Console.WriteLine($"Can't find file '{realFile}'...", Color.Yellow);
+                        ++index;
                         continue;
                     }
 
-                    // TODO: Detect car file conflict (check if the conflicting folder contains a ini file...)
-                    File.Copy(realFile, replFile);
+                    string origFile = backupFile.Replace(backupString, string.Empty);
 
-                    float perc = (float)index / totalCount;
-                    float subperc = (float)subindex / inFiles.Count;
-                    Console.WriteLine($"[{subperc * 100:F2} % (Total: {totalCount * 100:F2} %)] Moving file {subindex}: {Path.GetFileName(realFile)}...{(exists ? " [REPLACING...]" : string.Empty)}");
+                    if (File.Exists(origFile))
+                        File.Delete(origFile);
+                    else
+                        Console.WriteLine($"[{GetPerc(index, totalCount)}] Couldn't delete modified file '{origFile}'...", Color.Yellow);
 
-                    ++subindex;
+                    File.Move(backupFile, origFile);
+                    ++index;
+                }
+
+                foreach (var jsonFile in jsonFiles)
+                {
+                    Console.WriteLine($"[{GetPerc(index, totalCount)}] Deleted json file: {jsonFile}...", PromptColor);
+
+                    File.Delete(jsonFile);
+                    ++index;
+                }
+
+                // Delete rest of files
+                var aBackupFiles = allFiles
+                    .Where(file => Path.GetExtension(file)?.ToLowerInvariant().Contains(".backup") == true);
+
+                int aIndex = 0;
+                int aTotalCount = aBackupFiles.Count();
+
+                foreach (var aBackupFile in aBackupFiles)
+                {
+                    Console.WriteLine($"[{GetPerc(aIndex, aTotalCount)}] Deleted backup file: {aBackupFile}...", PromptColor);
+
+                    File.Delete(aBackupFile);
+                    ++index;
+                }
+
+                foreach (var moddedFile in _allDataFiles)
+                {
+                    if (allOrigFiles.Contains(moddedFile))
+                        continue;
+
+                    Console.WriteLine($"Deleted modded file: {moddedFile}...", PromptColor);
+                    File.Delete(moddedFile);
+                }
+            }
+
+            WriteSeparator();
+            {
+                int index = 0;
+                int totalCount = bfsFiles.Count();
+                float delta = 1f / totalCount;
+
+                foreach (var bfsFile in bfsFiles)
+                {
+                    if (!File.Exists(bfsFile) || Path.GetExtension(bfsFile).ToLowerInvariant() != ".bfs")
+                    {
+                        ++index;
+                        continue;
+                    }
+
+                    string actualTempPath = GetActualTempFolder(tempFolder, bfsFile) + "\\";
+
+                    if (!Directory.Exists(actualTempPath))
+                    {
+                        Directory.CreateDirectory(actualTempPath);
+                        CreateProcess(Settings.BFS2PackPath, $"x {bfsFile} -v", actualTempPath);
+                    }
+
+                    var inFiles = bfsDict[actualTempPath].Item1;
+
+                    const string backupFilename = "backup-database.json";
+                    const string backupSufix = "backup";
+
+                    Dictionary<string, List<Tuple<int, string>>> currentDictionary;
+
+                    int subindex = 0;
+
+                    foreach (var inFile in inFiles)
+                    {
+                        string realFile = Path.Combine(actualTempPath, inFile);
+                        string replFile = Path.Combine(Settings.FO2Path, inFile);
+
+                        bool diffMD5 = CalculateMD5(realFile) != CalculateMD5(replFile);
+
+                        if (!diffMD5)
+                        {
+                            Console.WriteLine($"Skipping same file... ({realFile} => {replFile})", Color.Yellow);
+
+                            ++subindex;
+                            continue;
+                        }
+
+                        bool exists = File.Exists(replFile) && diffMD5;
+                        if (exists)
+                        {
+                            string folder = Path.GetDirectoryName(replFile);
+                            string database = Path.Combine(folder, backupFilename);
+
+                            // Get number of ocurrences
+                            int ocurrences = Directory
+                                .GetFiles(folder, $"{Path.GetFileNameWithoutExtension(replFile)}.*", SearchOption.TopDirectoryOnly)
+                                .Count(file => Path.GetExtension(file).ToLowerInvariant().Contains(".backup"));
+
+                            // Based on the number of backups then create *.backup(XX) files... *.backup0 will be always the original file
+                            File.Move(replFile, replFile + $".{backupSufix}{ocurrences}");
+
+                            string fileName = Path.GetFileName(replFile);
+
+                            // Load current dictionary...
+                            currentDictionary =
+                                File.Exists(database) ? JsonConvert.DeserializeObject<Dictionary<string, List<Tuple<int, string>>>>(
+                                    File.ReadAllText(database)) : new Dictionary<string, List<Tuple<int, string>>>();
+
+                            bool save = false;
+
+                            // Map the ocurrence with the folder where it comes from...
+                            if (!currentDictionary.ContainsKey(fileName))
+                            {
+                                var list = new List<Tuple<int, string>>(); // ocurrences = 0, in this scope
+                                list.Add(new Tuple<int, string>(ocurrences, actualTempPath));
+
+                                currentDictionary.Add(fileName, list);
+                                save = true;
+                            }
+                            else
+                            {
+                                var list = currentDictionary[fileName];
+                                if (list.Count < ocurrences)
+                                {
+                                    list.Add(new Tuple<int, string>(ocurrences, actualTempPath));
+                                    save = true;
+                                }
+                            }
+
+                            // If any changes made...
+                            if (save)
+                                File.WriteAllText(database,
+                                    JsonConvert.SerializeObject(currentDictionary, Formatting.Indented));
+                        }
+
+                        if (!File.Exists(realFile))
+                        {
+                            Console.WriteLine($"Can't find file '{realFile}'...", Color.Yellow);
+                            continue;
+                        }
+
+                        string replFolder = Path.GetDirectoryName(replFile);
+
+                        if (!Directory.Exists(replFolder))
+                            Directory.CreateDirectory(replFolder);
+
+                        // TODO: Detect car file conflict (check if the conflicting folder contains a ini file...)
+                        File.Copy(realFile, replFile);
+
+                        string subPerc = GetPerc(subindex, inFiles.Count, out float subPercValue);
+                        string perc = $"[{(float)index / totalCount + delta * subPercValue:F2} %]"; // GetPerc(index, totalCount);
+
+                        Console.WriteLine($"[{subPerc} (Total: {perc})] Moving file {subindex}: {Path.GetFileName(realFile)}...{(exists ? " [REPLACING...]" : string.Empty)}");
+
+                        ++subindex;
+                    }
+
+                    ++index;
+                    WriteSeparator();
                 }
             }
 
             Console.WriteLine($"{bfsDict.Values.Sum(v => v.Item2.Count)} total intersections...");
             Console.WriteLine("Completed!", Color.LimeGreen);
             AnyKeyToExit();
+        }
+
+        private static string CalculateMD5(string filename)
+        {
+            using (var md5 = MD5.Create())
+            {
+                using (var stream = File.OpenRead(filename))
+                {
+                    var hash = md5.ComputeHash(stream);
+                    return BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant();
+                }
+            }
+        }
+
+        private static void WriteSeparator(int count = 30)
+        {
+            Console.WriteLine(new string('=', count));
+        }
+
+        private static string GetPerc(int index, int total)
+        {
+            return GetPerc(index, total, out var perc);
+        }
+
+        private static string GetPerc(int index, int total, out float perc)
+        {
+            perc = (float)index / total * 100;
+            return $"{perc:F2} %";
         }
 
         private static string GetActualTempFolder(string folder, string actualFile)
@@ -210,12 +352,12 @@ namespace FO2Utils.Shell
             return result;
         }
 
-        private static List<string> GetFolderFiles(string folder)
+        private static List<string> GetFolderFiles(string folder, bool cutFile = true)
         {
             const string dataLiteral = @"\data\";
             return Directory.GetFiles(folder, "*.*", SearchOption.AllDirectories)
                 .Where(file => file.ToLowerInvariant().Contains(dataLiteral))
-                .Select(file => file.Substring(file.ToLowerInvariant().IndexOf(dataLiteral) + 1))
+                .Select(file => cutFile ? file.Substring(file.ToLowerInvariant().IndexOf(dataLiteral, StringComparison.Ordinal) + 1) : file)
                 .ToList();
         }
 
