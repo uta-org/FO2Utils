@@ -22,7 +22,7 @@ namespace FO2Utils.Shell
 
             if (string.IsNullOrEmpty(Settings.FO2Path) || !Directory.Exists(Settings.FO2Path))
             {
-                ShowError(string.Format(errorMsg0, "Flat Out 2"));
+                ShowError(string.Format(errorMsg0, "FlatOut 2"));
                 return;
             }
 
@@ -65,12 +65,14 @@ namespace FO2Utils.Shell
             string dictJson = Path.Combine(tempFolder, "dict.json");
             File.WriteAllText(dictJson, JsonConvert.SerializeObject(bfsDict, Formatting.Indented));
 
+            // TODO: Make restore
+
             foreach (var bfsFile in bfsFiles)
             {
                 if (!File.Exists(bfsFile) || Path.GetExtension(bfsFile).ToLowerInvariant() != ".bfs")
                     continue;
 
-                string actualTempPath = GetActualTempFolder(tempFolder, bfsFile);
+                string actualTempPath = GetActualTempFolder(tempFolder, bfsFile) + "\\";
 
                 if (!Directory.Exists(actualTempPath))
                 {
@@ -79,7 +81,10 @@ namespace FO2Utils.Shell
                 }
 
                 var inFiles = bfsDict[actualTempPath].Item1;
+
                 const string backupFilename = "backup-database.json";
+                const string backupSufix = "backup";
+
                 Dictionary<string, List<Tuple<int, string>>> currentDictionary;
 
                 int index = 0;
@@ -94,9 +99,11 @@ namespace FO2Utils.Shell
                         string folder = Path.GetDirectoryName(replFile);
                         string database = Path.Combine(folder, backupFilename);
 
-                        int ocurrences = Directory.GetFiles(folder, "*.backup", SearchOption.TopDirectoryOnly).Length;
+                        int ocurrences = Directory
+                            .GetFiles(folder, $"{Path.GetFileNameWithoutExtension(replFile)}.*", SearchOption.TopDirectoryOnly)
+                            .Count(file => Path.GetExtension(file).ToLowerInvariant().Contains(".backup"));
 
-                        File.Move(replFile, replFile + $".backup{ocurrences}");
+                        File.Move(replFile, replFile + $".{backupSufix}{ocurrences}");
 
                         string fileName = Path.GetFileName(replFile);
 
@@ -127,14 +134,21 @@ namespace FO2Utils.Shell
 
                         if (save)
                         {
-                            File.WriteAllText(database, JsonConvert.SerializeObject(currentDictionary));
+                            File.WriteAllText(database, JsonConvert.SerializeObject(currentDictionary, Formatting.Indented));
                         }
                     }
 
+                    if (!File.Exists(realFile))
+                    {
+                        Console.WriteLine($"Can't find file '{realFile}'...", Color.Yellow);
+                        continue;
+                    }
+
+                    // TODO: Detect car file conflict (check if the conflicting folder contains a ini file...)
                     File.Copy(realFile, replFile);
 
                     float perc = (float)index / inFiles.Count;
-                    Console.WriteLine($"[{perc:F2}%] Moving file {index}: {Path.GetFileName(realFile)}...{(exists ? " [REPLACING...]" : string.Empty)}");
+                    Console.WriteLine($"[{perc * 100:F2}%] Moving file {index}: {Path.GetFileName(realFile)}...{(exists ? " [REPLACING...]" : string.Empty)}");
 
                     ++index;
                 }
