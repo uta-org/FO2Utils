@@ -67,6 +67,8 @@ namespace FO2Utils.Shell
 
             // TODO: Make restore
 
+            int index = 0;
+            int totalCount = bfsFiles.Count();
             foreach (var bfsFile in bfsFiles)
             {
                 if (!File.Exists(bfsFile) || Path.GetExtension(bfsFile).ToLowerInvariant() != ".bfs")
@@ -87,7 +89,7 @@ namespace FO2Utils.Shell
 
                 Dictionary<string, List<Tuple<int, string>>> currentDictionary;
 
-                int index = 0;
+                int subindex = 0;
                 foreach (var inFile in inFiles)
                 {
                     string realFile = Path.Combine(actualTempPath, inFile);
@@ -99,10 +101,12 @@ namespace FO2Utils.Shell
                         string folder = Path.GetDirectoryName(replFile);
                         string database = Path.Combine(folder, backupFilename);
 
+                        // Get number of ocurrences
                         int ocurrences = Directory
                             .GetFiles(folder, $"{Path.GetFileNameWithoutExtension(replFile)}.*", SearchOption.TopDirectoryOnly)
                             .Count(file => Path.GetExtension(file).ToLowerInvariant().Contains(".backup"));
 
+                        // Based on the number of backups then create *.backup(XX) files... *.backup0 will be always the original file
                         File.Move(replFile, replFile + $".{backupSufix}{ocurrences}");
 
                         string fileName = Path.GetFileName(replFile);
@@ -114,6 +118,7 @@ namespace FO2Utils.Shell
 
                         bool save = false;
 
+                        // Map the ocurrence with the folder where it comes from...
                         if (!currentDictionary.ContainsKey(fileName))
                         {
                             var list = new List<Tuple<int, string>>(); // ocurrences = 0, in this scope
@@ -132,10 +137,10 @@ namespace FO2Utils.Shell
                             }
                         }
 
+                        // If any changes made...
                         if (save)
-                        {
-                            File.WriteAllText(database, JsonConvert.SerializeObject(currentDictionary, Formatting.Indented));
-                        }
+                            File.WriteAllText(database,
+                                JsonConvert.SerializeObject(currentDictionary, Formatting.Indented));
                     }
 
                     if (!File.Exists(realFile))
@@ -147,10 +152,11 @@ namespace FO2Utils.Shell
                     // TODO: Detect car file conflict (check if the conflicting folder contains a ini file...)
                     File.Copy(realFile, replFile);
 
-                    float perc = (float)index / inFiles.Count;
-                    Console.WriteLine($"[{perc * 100:F2}%] Moving file {index}: {Path.GetFileName(realFile)}...{(exists ? " [REPLACING...]" : string.Empty)}");
+                    float perc = (float)index / totalCount;
+                    float subperc = (float)subindex / inFiles.Count;
+                    Console.WriteLine($"[{subperc * 100:F2} % (Total: {totalCount * 100:F2} %)] Moving file {subindex}: {Path.GetFileName(realFile)}...{(exists ? " [REPLACING...]" : string.Empty)}");
 
-                    ++index;
+                    ++subindex;
                 }
             }
 
