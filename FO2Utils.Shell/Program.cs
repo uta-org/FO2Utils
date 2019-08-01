@@ -5,6 +5,7 @@ using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
+using System.Text.RegularExpressions;
 using FO2Utils.Shell.Properties;
 using Newtonsoft.Json;
 using Console = Colorful.Console;
@@ -16,6 +17,18 @@ namespace FO2Utils.Shell
         private static Color PromptColor => Color.DodgerBlue;
         private static Settings Settings => Settings.Default;
         private static List<string> FO2DataContents { get; set; } = new List<string>();
+        private static HashSet<string> AllOrigFiles { get; set; }
+
+        private static string DataFolder => Path.Combine(Settings.FO2Path, "data");
+        private static string TempFolder => Path.Combine(Settings.FO2Path, "temp");
+
+        private const string CarHandle = @"data\cars\car_";
+        private const string DataLiteral = @"\data\";
+
+        private static HashSet<int> CarIds { get; set; }
+
+        private static Dictionary<int, int> MappedConflicts { get; } = new Dictionary<int, int>();
+        private static Dictionary<string, int> MappedConflictsPath { get; } = new Dictionary<string, int>();
 
         private static void Main(string[] args)
         {
@@ -45,50 +58,49 @@ namespace FO2Utils.Shell
                 return;
             }
 
-            string dataFolder = Path.Combine(Settings.FO2Path, "data");
-            string tempFolder = Path.Combine(Settings.FO2Path, "temp");
+            if (!Directory.Exists(TempFolder))
+                Directory.CreateDirectory(TempFolder);
 
-            if (!Directory.Exists(tempFolder))
-                Directory.CreateDirectory(tempFolder);
-
-            if (!Directory.Exists(dataFolder))
+            if (!Directory.Exists(DataFolder))
             {
                 ShowError("Can't access data folder, please check that FO2 contains one...");
                 return;
             }
 
             string[] lines = File.ReadAllLines(Settings.PatchFilePath);
+
             var bfsFiles = lines.Select(line => Path.Combine(Path.GetDirectoryName(Settings.PatchFilePath), line));
-            var bfsFolders = bfsFiles.Select(line => GetActualTempFolder(tempFolder, line));
+            var bfsFolders = bfsFiles.Select(line => GetActualTempFolder(TempFolder, line));
             var bfsDict = bfsFolders.Select(folder => new { Folder = folder, Files = GetFolderFiles(folder), ConflictingFiles = GetConflictingFiles(folder) })
                 .ToDictionary(t => t.Folder + "\\", t => new Tuple<List<string>, List<string>>(t.Files, t.ConflictingFiles));
             var _allFiles = bfsFolders.Select(file => GetFolderFiles(file, false).AsEnumerable()).Select(x => x).Distinct().ToList();
 
-            HashSet<string> allOrigFiles;
-            string origJson = Path.Combine(tempFolder, "origFiles.json");
+            string origJson = Path.Combine(TempFolder, "origFiles.json");
 
             if (!File.Exists(origJson))
             {
-                allOrigFiles = new HashSet<string>(GetFolderFiles(dataFolder, false));
-                File.WriteAllText(origJson, JsonConvert.SerializeObject(allOrigFiles, Formatting.Indented));
+                AllOrigFiles = new HashSet<string>(GetFolderFiles(DataFolder, false));
+                File.WriteAllText(origJson, JsonConvert.SerializeObject(AllOrigFiles, Formatting.Indented));
             }
             else
-                allOrigFiles = JsonConvert.DeserializeObject<HashSet<string>>(File.ReadAllText(origJson));
+                AllOrigFiles = JsonConvert.DeserializeObject<HashSet<string>>(File.ReadAllText(origJson));
 
-            string dictJson = Path.Combine(tempFolder, "dict.json");
+            CarIds = new HashSet<int>(AllOrigFiles.Where(file => file.ToLowerInvariant().Contains(CarHandle))
+                .Select(file => GetCarIdFromPath(file, CarHandle)));
+
+            string dictJson = Path.Combine(TempFolder, "dict.json");
             File.WriteAllText(dictJson, JsonConvert.SerializeObject(bfsDict, Formatting.Indented));
 
-            string allFilesJson = Path.Combine(tempFolder, "files.json");
+            string allFilesJson = Path.Combine(TempFolder, "files.json");
             File.WriteAllText(allFilesJson, JsonConvert.SerializeObject(_allFiles, Formatting.Indented));
 
-            // TODO: Make restore
             Console.Write("Do you wish to make a restore? [y/N]: ");
             if (Console.ReadLine().ToLowerInvariant() == "y")
             {
                 const string backupString = ".backup0";
 
-                var allFiles = Directory.GetFiles(dataFolder, "*.*", SearchOption.AllDirectories);
-                var _allDataFiles = bfsFolders.Select(file => dataFolder + "\\" + GetFolderFiles(file).AsEnumerable()).Select(x => x).Distinct().ToList();
+                var allFiles = Directory.GetFiles(DataFolder, "*.*", SearchOption.AllDirectories);
+                var _allDataFiles = bfsFolders.Select(file => DataFolder + "\\" + GetFolderFiles(file).AsEnumerable()).Select(x => x).Distinct().ToList();
 
                 var backupFiles = allFiles
                     .Where(file => Path.GetExtension(file)?.ToLowerInvariant() == backupString);
@@ -145,14 +157,13 @@ namespace FO2Utils.Shell
 
                 foreach (var moddedFile in _allDataFiles)
                 {
-                    if (allOrigFiles.Contains(moddedFile))
+                    if (AllOrigFiles.Contains(moddedFile))
                         continue;
 
                     Console.WriteLine($"Deleted modded file: {moddedFile}...", PromptColor);
                     File.Delete(moddedFile);
                 }
             }
-
             WriteSeparator();
             {
                 int index = 0;
@@ -167,7 +178,7 @@ namespace FO2Utils.Shell
                         continue;
                     }
 
-                    string actualTempPath = GetActualTempFolder(tempFolder, bfsFile) + "\\";
+                    string actualTempPath = GetActualTempFolder(TempFolder, bfsFile) + "\\";
 
                     if (!Directory.Exists(actualTempPath))
                     {
@@ -253,13 +264,13 @@ namespace FO2Utils.Shell
                             continue;
                         }
 
-                        string replFolder = Path.GetDirectoryName(replFile);
+                        string resolvedFile = ResolveCarConflict(replFile, realFile);
+                        string replFolder = Path.GetDirectoryName(resolvedFile);
 
                         if (!Directory.Exists(replFolder))
                             Directory.CreateDirectory(replFolder);
 
-                        // TODO: Detect car file conflict (check if the conflicting folder contains a ini file...)
-                        File.Copy(realFile, replFile);
+                        File.Copy(realFile, resolvedFile);
 
                         string subPerc = GetPerc(subindex, inFiles.Count, out float subPercValue);
                         string perc = $"[{(float)index / totalCount + delta * subPercValue:F2} %]"; // GetPerc(index, totalCount);
@@ -277,6 +288,73 @@ namespace FO2Utils.Shell
             Console.WriteLine($"{bfsDict.Values.Sum(v => v.Item2.Count)} total intersections...");
             Console.WriteLine("Completed!", Color.LimeGreen);
             AnyKeyToExit();
+        }
+
+        private static int GetCarIdFromPath(string file, string carHandle)
+        {
+            //if (!file.ToLowerInvariant().Contains(carHandle))
+            //    throw new Exception();
+
+            int index = file.IndexOf(carHandle) + carHandle.Length;
+            return int.Parse(file.Substring(index, file.LastIndexOf("\\") - index));
+        }
+
+        private static string ResolveCarConflict(string fileName, string fromFileName)
+        {
+            const string idGroupName = "ID";
+            string carHandle0 = $@"car_(?<{idGroupName}>(\d+))";
+            string carHandle1 = $@"car(?<{idGroupName}>(\d+))";
+
+            bool match0 = Regex.IsMatch(fromFileName, carHandle0);
+            bool match1 = Regex.IsMatch(fromFileName, carHandle1);
+
+            // !fileName.ToLowerInvariant().Contains(carHandle) || !fileName.All(char.IsDigit)
+            if (!(match0 || match1))
+                return fileName;
+
+            int id = -1;
+
+            if (match0)
+                id = int.Parse(Regex.Match(fromFileName, carHandle0).Groups[idGroupName].Value);
+            else if (match1)
+                id = int.Parse(Regex.Match(fromFileName, carHandle1).Groups[idGroupName].Value);
+
+            if (id == -1)
+                return fileName;
+
+            // Has conflict?
+            if (AllOrigFiles.Any(file => file.Contains(GetDataSubString(file, DataLiteral))))
+            {
+                int freeId;
+
+                bool containsId = MappedConflicts.ContainsKey(id);
+                bool containsPath = MappedConflictsPath.ContainsKey(fileName);
+
+                if (!containsId || !containsPath)
+                {
+                    freeId = CarIds.Min() + 1;
+                    CarIds.Add(freeId);
+
+                    MappedConflicts.Add(id, freeId);
+                    MappedConflictsPath.Add(fileName, freeId);
+                }
+                else if (!containsId && containsPath)
+                {
+                    // TODO
+                }
+                else if (containsId && !containsPath)
+                {
+                    // TODO
+                }
+                else
+                {
+                    freeId = MappedConflicts[id];
+                }
+
+                return fileName.Replace(id.ToString(), freeId.ToString());
+            }
+
+            return fileName;
         }
 
         private static string CalculateMD5(string filename)
@@ -354,11 +432,16 @@ namespace FO2Utils.Shell
 
         private static List<string> GetFolderFiles(string folder, bool cutFile = true)
         {
-            const string dataLiteral = @"\data\";
             return Directory.GetFiles(folder, "*.*", SearchOption.AllDirectories)
-                .Where(file => file.ToLowerInvariant().Contains(dataLiteral))
-                .Select(file => cutFile ? file.Substring(file.ToLowerInvariant().IndexOf(dataLiteral, StringComparison.Ordinal) + 1) : file)
+                .Where(file => file.ToLowerInvariant().Contains(DataLiteral))
+                .Select(file => cutFile ? GetDataSubString(file, DataLiteral) : file)
                 .ToList();
+        }
+
+        private static string GetDataSubString(string file, string dataLiteral)
+        {
+            return file
+                .Substring(file.ToLowerInvariant().IndexOf(dataLiteral, StringComparison.Ordinal) + 1);
         }
 
         private static void GetExecutingString(ProcessStartInfo info)
